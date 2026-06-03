@@ -76,6 +76,22 @@ logger = logging.getLogger(__name__)
 _OP_TYPE = "artifact_operation"
 
 
+async def _agent_send(agent, msg):
+    if not msg.sender:
+        msg.sender = str(agent.jid)
+    to = str(msg.to)
+    if agent.container and agent.container.has_agent(to):
+        receiver = agent.container.get_agent(to)
+        if hasattr(receiver, "dispatch"):
+            receiver.dispatch(msg)
+        elif hasattr(receiver, "queue"):
+            receiver.queue.put_nowait(msg)
+    else:
+        slixmpp_msg = msg.prepare(agent.client)
+        slixmpp_msg.send()
+    msg.sent = True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Decorator
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +163,7 @@ class _ArtifactComponentProxy:
             body=json.dumps(list(args)),
             metadata={"type": _OP_TYPE, "operation": operation_name},
         )
-        await agent.send(msg)
+        await _agent_send(agent, msg)
         logger.debug(f"[artifacts.use] → {artifact_jid}::{operation_name}({args})")
 
     # ── White pages ──────────────────────────────────────────────────────
@@ -328,10 +344,10 @@ class OperableArtifact(Artifact):
         msg = await self.receive(timeout=timeout)
         if msg is None:
             return
-        if msg.metadata.get("type") != _OP_TYPE:
+        if msg.get_metadata("type") != _OP_TYPE:
             return
 
-        op_name = msg.metadata.get("operation", "")
+        op_name = msg.get_metadata("operation") or ""
         try:
             args = json.loads(msg.body) if msg.body else []
         except json.JSONDecodeError:
@@ -483,7 +499,7 @@ class AgentDirectoryMixin:
             ]),
             metadata={"type": _OP_TYPE, "operation": "register"},
         )
-        await self.send(msg)
+        await _agent_send(self, msg)
         logger.info(
             f"[{self._agent_type}@{self.jid}] registered with directory "
             f"{self._dir_jid}: capabilities={self._capabilities}"
@@ -497,5 +513,5 @@ class AgentDirectoryMixin:
                 body=json.dumps([str(self.jid)]),
                 metadata={"type": _OP_TYPE, "operation": "unregister"},
             )
-            await self.send(msg)
+            await _agent_send(self, msg)
             logger.info(f"[{self._agent_type}] unregistered from directory")
